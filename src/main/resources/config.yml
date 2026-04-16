@@ -1,0 +1,4 @@
+# DisableSoulRender 配置文件
+
+# 玩家在鞘翅飞行时尝试使用 Soul Render 时显示的消息
+message: "鞘翅飞行时无法使用 Soul Render！"
