@@ -1,7 +1,6 @@
 package com.example.disablesoulrender;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.ChatColor;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -11,7 +10,10 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 public class SoulRenderListener implements Listener {
 
@@ -20,21 +22,18 @@ public class SoulRenderListener implements Listener {
 
     // 防止消息刷屏的冷却 (ms)
     private static final long MESSAGE_COOLDOWN = 2000L;
-    private final java.util.Map<java.util.UUID, Long> lastMessageTime = new java.util.HashMap<>();
+    private final Map<UUID, Long> lastMessageTime = new HashMap<>();
 
     public SoulRenderListener(DisableSoulRender plugin) {
         this.plugin = plugin;
-        // cataclysm:soul_render 的 NamespacedKey
         this.soulRenderKey = new NamespacedKey("cataclysm", "soul_render");
     }
 
     /**
      * 监听玩家右键点击（空气/方块）事件
-     * 这是 soul_render 加速鞘翅的触发方式
      */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onPlayerInteract(PlayerInteractEvent event) {
-        // 只处理右键动作
         if (event.getAction() != Action.RIGHT_CLICK_AIR
                 && event.getAction() != Action.RIGHT_CLICK_BLOCK) {
             return;
@@ -42,7 +41,6 @@ public class SoulRenderListener implements Listener {
 
         Player player = event.getPlayer();
 
-        // 只在鞘翅飞行时拦截
         if (!player.isGliding()) {
             return;
         }
@@ -52,7 +50,6 @@ public class SoulRenderListener implements Listener {
             return;
         }
 
-        // 判断是否为 soul_render
         if (!isSoulRender(item)) {
             return;
         }
@@ -62,12 +59,11 @@ public class SoulRenderListener implements Listener {
         event.setUseItemInHand(org.bukkit.event.Event.Result.DENY);
         event.setUseInteractedBlock(org.bukkit.event.Event.Result.DENY);
 
-        // 提示玩家
         sendCooldownMessage(player);
     }
 
     /**
-     * 监听玩家右键点击实体事件（防止对实体使用）
+     * 监听玩家右键点击实体事件
      */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
@@ -94,39 +90,26 @@ public class SoulRenderListener implements Listener {
             return false;
         }
 
-        // 方式1：通过物品的 Key 判断（最可靠）
+        // 方式1：通过 Material 的 Key 判断（最可靠）
         try {
             NamespacedKey itemKey = item.getType().getKey();
             if (soulRenderKey.equals(itemKey)) {
                 return true;
             }
         } catch (Exception ignored) {
-            // 部分模组物品可能无法通过此方式获取，继续尝试其他方式
         }
 
-        // 方式2：通过物品的字符串表示判断（兜底）
+        // 方式2：通过物品类型字符串兜底
         String itemString = item.getType().toString().toLowerCase();
         if (itemString.contains("soul_render")) {
             return true;
-        }
-
-        // 方式3：通过 translation key 判断
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null) {
-            try {
-                String translationKey = item.translationKey();
-                if (translationKey != null && translationKey.contains("soul_render")) {
-                    return true;
-                }
-            } catch (Exception ignored) {
-            }
         }
 
         return false;
     }
 
     /**
-     * 发送冷却提示，避免刷屏
+     * 发送提示消息（ActionBar 不可用时降级为聊天栏）
      */
     private void sendCooldownMessage(Player player) {
         long now = System.currentTimeMillis();
@@ -143,7 +126,44 @@ public class SoulRenderListener implements Listener {
                 "鞘翅飞行时无法使用 Soul Render！"
         );
 
-        Component message = Component.text(msgText).color(NamedTextColor.RED);
-        player.sendActionBar(message);
+        String coloredMsg = ChatColor.translateAlternateColorCodes('&', "&c" + msgText);
+
+        // 用反射调用 sendActionBar，避免直接依赖 Paper / Adventure API
+        if (!trySendActionBar(player, coloredMsg)) {
+            // 如果 ActionBar 失败，降级为普通聊天消息
+            player.sendMessage(coloredMsg);
+        }
+    }
+
+    /**
+     * 通过反射尝试发送 ActionBar 消息，兼容 Spigot / Paper / Arclight 等
+     */
+    private boolean trySendActionBar(Player player, String message) {
+        // 尝试 Spigot API 的 sendMessage(ChatMessageType, BaseComponent...)
+        try {
+            Class<?> chatMessageTypeClass = Class.forName("net.md_5.bungee.api.ChatMessageType");
+            Class<?> baseComponentClass = Class.forName("net.md_5.bungee.api.chat.BaseComponent");
+            Class<?> textComponentClass = Class.forName("net.md_5.bungee.api.chat.TextComponent");
+
+            Object actionBarType = chatMessageTypeClass
+                    .getField("ACTION_BAR")
+                    .get(null);
+
+            Object textComponent = textComponentClass
+                    .getConstructor(String.class)
+                    .newInstance(message);
+
+            Object componentArray = java.lang.reflect.Array.newInstance(baseComponentClass, 1);
+            java.lang.reflect.Array.set(componentArray, 0, textComponent);
+
+            player.spigot()
+                    .getClass()
+                    .getMethod("sendMessage", chatMessageTypeClass, componentArray.getClass())
+                    .invoke(player.spigot(), actionBarType, componentArray);
+
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 }
